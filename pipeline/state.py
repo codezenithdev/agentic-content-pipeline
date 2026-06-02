@@ -57,6 +57,11 @@ class PipelineState(TypedDict, total=False):
     seo_feedback: dict[str, Any] | None
     approved: bool
     warnings: list[str]
+    # Populated by the publisher on approval (used by the meta.json export + the UI):
+    title: str
+    meta_description: str
+    slug: str
+    output_files: dict[str, str] | None
 
 
 def initial_state(topic: str, target_keyword: str) -> PipelineState:
@@ -76,4 +81,8 @@ def initial_state(topic: str, target_keyword: str) -> PipelineState:
         seo_feedback=None,
         approved=False,
         warnings=[],
+        title="",
+        meta_description="",
+        slug="",
+        output_files=None,
     )
