@@ -1,0 +1,26 @@
+# Core orchestration + LLM
+langgraph>=0.2.0
+langchain-core>=0.3.0
+langchain-openai>=0.2.0
+openai>=1.40.0
+
+# Real web search for the research agent
+tavily-python>=0.5.0
+
+# Typed state + structured agent outputs
+pydantic>=2.7.0
+
+# Readability scoring for the SEO agent
+textstat>=0.7.3
+
+# Markdown -> semantic HTML for the Medium-import export
+markdown>=3.6
+
+# Visual demo UI
+streamlit>=1.36.0
+
+# Secrets loading
+python-dotenv>=1.0.0
+
+# Tests (mock mode, no API keys required)
+pytest>=8.0.0
