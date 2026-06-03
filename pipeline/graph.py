@@ -84,7 +84,7 @@ EDITOR = "editor_agent"
 PUBLISHER = "publisher_agent"
 
 
-def route_after_seo(state: PipelineState) -> Literal["editor_agent", "publisher_agent"]:
+def route_after_seo(state: V2PipelineState) -> Literal["editor_agent", "publisher_agent"]:
     """Decide whether to loop back to the editor or proceed to the publisher.
 
     Pure routing function (it does not mutate state); it logs each decision for observability.
@@ -96,30 +96,35 @@ def route_after_seo(state: PipelineState) -> Literal["editor_agent", "publisher_
     seo_score = state.get("seo_score")
     fc = fact_check_score if fact_check_score is not None else 0.0
     seo = seo_score if seo_score is not None else 0
+    history = state.get("revision_history", []) or []
+    last_dist = history[-1].edit_distance if history else None
 
+    # 1) Hard loop guard (checked first) — never exceed MAX_REVISIONS.
     if revision_count >= config.MAX_REVISIONS:
-        logger.info(
-            "router: revision_count %d >= MAX_REVISIONS %d -> %s (loop guard)",
-            revision_count, config.MAX_REVISIONS, PUBLISHER,
-        )
+        logger.info("[ROUTER] Round %d | fact_check=%.2f | seo=%d | revision cap reached -> %s",
+                    revision_count, fc, seo, PUBLISHER)
         return PUBLISHER
-    if fc < config.FACT_CHECK_THRESHOLD:
-        logger.info(
-            "router: fact_check_score %.2f < %.2f -> %s (revision %d)",
-            fc, config.FACT_CHECK_THRESHOLD, EDITOR, revision_count + 1,
-        )
-        return EDITOR
-    if seo < config.SEO_THRESHOLD:
-        logger.info(
-            "router: seo_score %d < %d -> %s (revision %d)",
-            seo, config.SEO_THRESHOLD, EDITOR, revision_count + 1,
-        )
-        return EDITOR
-    logger.info(
-        "router: fact_check_score %.2f >= %.2f and seo_score %d >= %d -> %s",
-        fc, config.FACT_CHECK_THRESHOLD, seo, config.SEO_THRESHOLD, PUBLISHER,
-    )
-    return PUBLISHER
+
+    # 2) Quality gates pass -> publish.
+    needs_edit = fc < config.FACT_CHECK_THRESHOLD or seo < config.SEO_THRESHOLD
+    if not needs_edit:
+        logger.info("[ROUTER] Round %d | fact_check=%.2f (>=%.2f) | seo=%d (>=%d) -> %s",
+                    revision_count, fc, config.FACT_CHECK_THRESHOLD, seo, config.SEO_THRESHOLD, PUBLISHER)
+        return PUBLISHER
+
+    # 3) Would loop to the editor — but if the last edit barely changed anything, the editor has
+    #    stalled; escalate to HITL instead of spinning.
+    if last_dist is not None and last_dist < config.EDIT_DISTANCE_STALL:
+        logger.info("[ROUTER] Round %d | edit_dist=%.4f < %.3f -> %s (editor stalled)",
+                    revision_count, last_dist, config.EDIT_DISTANCE_STALL, PUBLISHER)
+        return PUBLISHER
+
+    fc_str = f"{fc:.2f} (<{config.FACT_CHECK_THRESHOLD})" if fc < config.FACT_CHECK_THRESHOLD else f"{fc:.2f}"
+    seo_str = f"{seo} (<{config.SEO_THRESHOLD})" if seo < config.SEO_THRESHOLD else f"{seo}"
+    dist_str = f"{last_dist:.3f}" if last_dist is not None else "n/a"
+    logger.info("[ROUTER] Round %d | fact_check=%s | seo=%s | edit_dist=%s -> %s",
+                revision_count, fc_str, seo_str, dist_str, EDITOR)
+    return EDITOR
 
 
 def _default_checkpointer() -> MemorySaver:
@@ -157,8 +162,8 @@ def build_graph(checkpointer=None):
     builder.add_node(WRITER, _sync(writer_agent))
     builder.add_node(FACT_CHECK, _sync(fact_check_agent))
     builder.add_node(SEO, _sync(seo_agent))
-    builder.add_node(EDITOR, editor_agent)
-    builder.add_node(PUBLISHER, publisher_agent)
+    builder.add_node(EDITOR, _sync(editor_agent))
+    builder.add_node(PUBLISHER, publisher_agent)  # publisher stays synchronous
 
     builder.add_edge(START, RESEARCH)
     builder.add_edge(RESEARCH, WRITER)

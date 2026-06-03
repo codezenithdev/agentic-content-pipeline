@@ -83,8 +83,9 @@ def test_seo_returns_score_and_fix_lists(drafted_state):
 
 def test_editor_increments_revision_count(drafted_state):
     before = drafted_state["revision_count"]
-    out = editor_agent(drafted_state)
+    out = asyncio.run(editor_agent(drafted_state))
     assert out["revision_count"] == before + 1
+    assert out["revision_history"] and out["revision_history"][-1].round_number == before + 1
     assert out["draft"]
 
 

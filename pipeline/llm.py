@@ -222,11 +222,45 @@ class _MockEmbeddings:
         return _MockEmbeddingResponse([_MockEmbeddingItem(_deterministic_vector(t)) for t in texts])
 
 
+class _MockTranscription:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class _MockTranscriptions:
+    def create(self, model: str, file: Any, **_: Any) -> "_MockTranscription":
+        name = getattr(file, "name", "audio")
+        return _MockTranscription(f"Mock transcript for {name}")
+
+
+class _MockSpeechResponse:
+    def __init__(self, data: bytes) -> None:
+        self.content = data
+
+    def stream_to_file(self, path: str) -> None:
+        with open(path, "wb") as handle:
+            handle.write(self.content)
+
+    write_to_file = stream_to_file
+
+
+class _MockSpeech:
+    def create(self, model: str, voice: str, input: str, **_: Any) -> "_MockSpeechResponse":
+        return _MockSpeechResponse(b"ID3\x03mock-mp3-" + input[:48].encode("utf-8", "ignore"))
+
+
+class _MockAudio:
+    def __init__(self) -> None:
+        self.transcriptions = _MockTranscriptions()
+        self.speech = _MockSpeech()
+
+
 class MockOpenAIClient:
-    """Offline stand-in for the raw ``openai.OpenAI`` client (embeddings now; audio in M7)."""
+    """Offline stand-in for the raw ``openai.OpenAI`` client (embeddings + audio)."""
 
     def __init__(self) -> None:
         self.embeddings = _MockEmbeddings()
+        self.audio = _MockAudio()
 
 
 def get_openai_client() -> Any:
