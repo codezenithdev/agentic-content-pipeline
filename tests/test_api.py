@@ -52,27 +52,33 @@ def test_memory_search_and_delete(tmp_path, monkeypatch):
     assert deleted["status"] == "deleted"
 
 
+def test_run_endpoint_returns_id():
+    """The HTTP POST /api/run route creates a run and returns an id."""
+    async def run():
+        async with _client() as c:
+            return (await c.post("/api/run", json={
+                "topic": "AI agents", "target_keyword": "kw", "style_persona": "op-ed"})).json()
+    assert asyncio.run(run())["run_id"]
+
+
 def test_run_stream_approve_flow(tmp_path, monkeypatch):
+    """Drive the SSE generator directly (no httpx) — fast + reliable; same code the route uses."""
     monkeypatch.setattr("pipeline.config.OUTPUT_DIR", str(tmp_path))
+    from v2.backend import stream as S
 
     async def run():
+        rs = S.start_run("apitest-run", "AI agents", "kw", "op-ed", None)
         events: list[str] = []
-        async with _client() as stream_c, _client() as ctrl_c:
-            run_id = (await ctrl_c.post("/api/run", json={
-                "topic": "AI agents", "target_keyword": "kw", "style_persona": "op-ed"})).json()["run_id"]
-            approved = False
-            async with stream_c.stream("GET", f"/api/run/{run_id}/stream") as resp:
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    ev = json.loads(line[len("data:"):].strip())
-                    events.append(ev["event"])
-                    if ev["event"] == "hitl_required" and not approved:
-                        await ctrl_c.post(f"/api/run/{run_id}/approve")
-                        approved = True
-                    elif ev["event"] in ("complete", "error"):
-                        break
-            return events
+        approved = False
+        async for sse in S.event_stream(rs):
+            ev = json.loads(sse["data"])
+            events.append(ev["event"])
+            if ev["event"] == "hitl_required" and not approved:
+                await S.approve(rs)
+                approved = True
+            elif ev["event"] in ("complete", "error"):
+                break
+        return events
 
     events = asyncio.run(run())
     assert "node_complete" in events
@@ -83,21 +89,17 @@ def test_run_stream_approve_flow(tmp_path, monkeypatch):
 
 def test_batch_stream_flow(tmp_path, monkeypatch):
     monkeypatch.setattr("pipeline.config.OUTPUT_DIR", str(tmp_path))
+    from v2.backend import stream as S
 
     async def run():
+        bs = S.start_batch("apitest-batch", ["AI agents", "Climate tech"], "kw", "technical deep-dive")
         events: list[str] = []
-        async with _client() as c:
-            batch_id = (await c.post("/api/batch", json={
-                "topics": ["AI agents", "Climate tech"], "target_keyword": "kw"})).json()["batch_id"]
-            async with c.stream("GET", f"/api/batch/{batch_id}/stream") as resp:
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    ev = json.loads(line[len("data:"):].strip())
-                    events.append(ev["event"])
-                    if ev["event"] in ("complete", "error"):
-                        break
-            return events
+        async for sse in S.batch_event_stream(bs):
+            ev = json.loads(sse["data"])
+            events.append(ev["event"])
+            if ev["event"] in ("complete", "error"):
+                break
+        return events
 
     events = asyncio.run(run())
     assert events.count("topic_complete") == 2
