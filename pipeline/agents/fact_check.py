@@ -1,90 +1,162 @@
-"""fact_check_agent — verify the draft's claims against the researched sources.
+"""fact_check_agent (V2, async) — RAG-based verification against full-page chunks.
 
-Input  (state): ``draft``, ``fact_sheet``, ``sources``
-Output (state update): ``fact_check_score`` (0.0-1.0), ``flagged_claims`` (list[FlaggedClaim]), ``warnings``
+Input  (state): ``draft``, ``full_page_chunks``, ``sources``, ``revision_count``
+Output (state update): ``fact_check_score`` (0-1), ``flagged_claims`` (V1 compat),
+                       ``flagged_claims_trace`` (list[ClaimTrace]), ``warnings``
 
-The agent extracts factual claims from the draft and cross-checks each against the fact
-sheet and source snippets (which together represent what the sources actually support).
-Claims with no support are likely hallucinations and are flagged with a concrete fix.
-Returns a single structured object via ``with_structured_output`` — no regex parsing.
+Flow: extract every factual claim from the draft; for each claim embed it and retrieve the top-3
+most relevant page chunks (cosine over our embeddings); have the LLM verify each claim against its
+retrieved evidence. Much more accurate than V1's snippet-only check. Falls back to source snippets
+when no chunks are available. Async so the V2 graph can stream.
 """
 
 from __future__ import annotations
+
+import asyncio
+import logging
+import math
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from pipeline import config, llm
-from pipeline.state import FlaggedClaim, PipelineState, Source
+from pipeline.state import ClaimTrace, FlaggedClaim, PageChunk, Source, V2PipelineState
+
+logger = logging.getLogger("pipeline.fact_check")
+
+_MAX_CLAIMS = 20
+_TOP_K = 3
+
+
+class _ClaimList(BaseModel):
+    claims: list[str] = Field(..., description="Every distinct factual claim made in the article.")
+
+
+class _ClaimVerdict(BaseModel):
+    claim: str
+    status: str = Field(..., description='"verified" | "flagged" (unsupported/contradicted).')
+    reason: str = Field(..., description="Why verified or flagged.")
+    suggested_fix: str = Field(default="", description="Concrete fix if flagged.")
+    source_url: str | None = Field(default=None, description="Best supporting source URL, or null.")
 
 
 class _FactCheckResult(BaseModel):
-    """Structured fact-check output."""
-
-    fact_check_score: float = Field(
-        ..., description="Overall support confidence 0.0-1.0 (1.0 = every claim is supported)."
-    )
-    flagged_claims: list[FlaggedClaim] = Field(
-        default_factory=list, description="Claims that are unsupported, contradicted, or exaggerated."
-    )
+    fact_check_score: float = Field(..., description="Overall support confidence 0.0-1.0.")
+    verdicts: list[_ClaimVerdict] = Field(default_factory=list)
 
 
-# Deterministic mock-mode response: a clean, passing check.
-llm.MOCK_RESPONSES["fact_check"] = {"fact_check_score": 0.95, "flagged_claims": []}
+# Schema-specific mock keys so the claim-extraction call and the verify call don't collide;
+# the plain "fact_check" key (verify result) stays overridable by tests via monkeypatch.
+llm.MOCK_RESPONSES["fact_check:_ClaimList"] = {"claims": ["Mock claim one", "Mock claim two"]}
+llm.MOCK_RESPONSES["fact_check"] = {
+    "fact_check_score": 0.95,
+    "verdicts": [
+        {"claim": "Mock claim one", "status": "verified", "reason": "supported by evidence",
+         "suggested_fix": "", "source_url": "https://example.com/1"},
+        {"claim": "Mock claim two", "status": "flagged", "reason": "no supporting evidence",
+         "suggested_fix": "Remove or attribute.", "source_url": None},
+    ],
+}
 
-_SYSTEM = (
-    "You are a rigorous fact-checker. You are given an ARTICLE, a FACT SHEET (facts tagged with "
-    "the source URLs that support them), and a list of SOURCES (title, URL, excerpt).\n"
-    "Task:\n"
-    "1. Extract every factual claim made in the article (statistics, study findings, dates, named "
-    "entities, cause-effect assertions).\n"
-    "2. For each claim, decide whether it is SUPPORTED by the fact sheet/sources, or "
-    "UNSUPPORTED / CONTRADICTED / EXAGGERATED.\n"
-    "3. Flag every claim that is not clearly supported. For each flagged claim give: the claim, the "
-    "reason it is flagged, a concrete suggested_fix (rewrite or removal), and source_url (a partially "
-    "relevant source URL, or null if none).\n"
-    "Scoring: fact_check_score is your overall confidence in [0.0, 1.0] that the whole article is "
-    "supported by the sources. 1.0 means every claim is supported; subtract more for each "
-    "unsupported claim, and subtract heavily for fabricated statistics or studies."
+_EXTRACT_SYSTEM = (
+    "You are a fact-checker. Extract every distinct factual claim from the ARTICLE (statistics, "
+    "study findings, dates, named entities, cause-effect assertions). Return them verbatim-ish."
+)
+_VERIFY_SYSTEM = (
+    "You are a rigorous fact-checker. For each CLAIM you are given the top retrieved EVIDENCE "
+    "chunks from the source pages. Decide whether each claim is SUPPORTED by its evidence.\n"
+    "For each claim return: status ('verified' or 'flagged'), a reason, a suggested_fix if flagged, "
+    "and the best supporting source_url (or null).\n"
+    "fact_check_score = overall confidence in [0,1] that the whole article is supported; subtract "
+    "heavily for fabricated statistics or studies."
 )
 
 
-def _format_sources(sources: list[Source]) -> str:
-    if not sources:
-        return "(no sources available)"
-    return "\n".join(f"- {s.title} | {s.url}\n  {s.snippet}" for s in sources)
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb) if na and nb else 0.0
 
 
-def fact_check_agent(state: PipelineState) -> dict:
-    """Cross-check the draft against sources and return a score + flagged claims (LangGraph node)."""
+async def _retrieve(claims: list[str], chunks: list[PageChunk]) -> dict[str, list[PageChunk]]:
+    """Embed claims + chunks and return the top-K chunks per claim (cosine)."""
+
+    if not claims or not chunks:
+        return {claim: [] for claim in claims}
+    chunk_embeddings = await asyncio.to_thread(llm.embed_texts, [c.chunk_text for c in chunks])
+    claim_embeddings = await asyncio.to_thread(llm.embed_texts, claims)
+    retrieved: dict[str, list[PageChunk]] = {}
+    for claim, claim_emb in zip(claims, claim_embeddings):
+        ranked = sorted(
+            ((_cosine(claim_emb, ce), i) for i, ce in enumerate(chunk_embeddings)),
+            reverse=True,
+        )
+        retrieved[claim] = [chunks[i] for _, i in ranked[:_TOP_K]]
+    return retrieved
+
+
+def _evidence_block(claims, retrieved, sources: list[Source]) -> str:
+    blocks = []
+    for i, claim in enumerate(claims, 1):
+        ev = retrieved.get(claim, [])
+        if ev:
+            lines = "\n".join(f"    - ({c.url}) {c.chunk_text[:400]}" for c in ev)
+        else:  # fallback to source snippets
+            lines = "\n".join(f"    - ({s.url}) {s.snippet[:300]}" for s in sources[:_TOP_K]) or "    (no evidence)"
+        blocks.append(f"CLAIM {i}: {claim}\n  EVIDENCE:\n{lines}")
+    return "\n\n".join(blocks)
+
+
+async def fact_check_agent(state: V2PipelineState) -> dict:
+    """Verify the draft's claims against retrieved page chunks (async node)."""
 
     draft = state.get("draft", "")
     warnings = list(state.get("warnings", []))
-
+    round_no = state.get("revision_count", 0)
     if not draft.strip():
         warnings.append("Fact-check skipped: empty draft.")
-        return {"fact_check_score": 0.0, "flagged_claims": [], "warnings": warnings}
+        return {"fact_check_score": 0.0, "flagged_claims": [], "flagged_claims_trace": [], "warnings": warnings}
 
-    model = llm.get_llm("fact_check").with_structured_output(_FactCheckResult).with_retry(
+    # 1) Extract claims.
+    extractor = llm.get_llm("fact_check").with_structured_output(_ClaimList).with_retry(
         stop_after_attempt=config.LLM_MAX_RETRIES
     )
-    result: _FactCheckResult = model.invoke(
+    claim_list: _ClaimList = await extractor.ainvoke(
+        [SystemMessage(content=_EXTRACT_SYSTEM), HumanMessage(content=f"ARTICLE:\n{draft}")]
+    )
+    claims = [c for c in claim_list.claims if c.strip()][:_MAX_CLAIMS]
+
+    # 2) Retrieve evidence per claim (RAG).
+    chunks = state.get("full_page_chunks", []) or []
+    retrieved = await _retrieve(claims, chunks)
+
+    # 3) Verify against retrieved evidence.
+    verifier = llm.get_llm("fact_check").with_structured_output(_FactCheckResult).with_retry(
+        stop_after_attempt=config.LLM_MAX_RETRIES
+    )
+    result: _FactCheckResult = await verifier.ainvoke(
         [
-            SystemMessage(content=_SYSTEM),
-            HumanMessage(
-                content=(
-                    f"ARTICLE:\n{draft}\n\n"
-                    f"FACT SHEET:\n{state.get('fact_sheet', '')}\n\n"
-                    f"SOURCES:\n{_format_sources(state.get('sources', []))}"
-                )
-            ),
+            SystemMessage(content=_VERIFY_SYSTEM),
+            HumanMessage(content=_evidence_block(claims, retrieved, state.get("sources", []))),
         ]
     )
 
-    # Defensive clamp (structured outputs don't strictly enforce numeric bounds).
     score = max(0.0, min(1.0, float(result.fact_check_score)))
+    trace = [
+        ClaimTrace(claim=v.claim, status=v.status, original_text=v.claim, revised_text=None,
+                   source_url=v.source_url, round_number=round_no)
+        for v in result.verdicts
+    ]
+    flagged = [
+        FlaggedClaim(claim=v.claim, reason=v.reason, suggested_fix=v.suggested_fix, source_url=v.source_url)
+        for v in result.verdicts if v.status.lower() != "verified"
+    ]
+    logger.info("fact_check: score=%.2f, %d claims, %d flagged (round %d, %d chunks)",
+                score, len(claims), len(flagged), round_no, len(chunks))
     return {
         "fact_check_score": score,
-        "flagged_claims": result.flagged_claims,
+        "flagged_claims": flagged,
+        "flagged_claims_trace": trace,
         "warnings": warnings,
     }

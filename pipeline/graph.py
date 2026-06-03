@@ -154,9 +154,9 @@ def build_graph(checkpointer=None):
 
     builder = StateGraph(V2PipelineState)  # superset schema; V1 nodes write a subset of channels
     builder.add_node(RESEARCH, _sync(research_agent))  # research is async (V2); adapt for V1's sync graph
-    builder.add_node(WRITER, writer_agent)
-    builder.add_node(FACT_CHECK, fact_check_agent)
-    builder.add_node(SEO, seo_agent)
+    builder.add_node(WRITER, _sync(writer_agent))
+    builder.add_node(FACT_CHECK, _sync(fact_check_agent))
+    builder.add_node(SEO, _sync(seo_agent))
     builder.add_node(EDITOR, editor_agent)
     builder.add_node(PUBLISHER, publisher_agent)
 

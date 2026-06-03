@@ -37,6 +37,12 @@ logger = logging.getLogger("pipeline.research")
 _SNIPPET_CHARS = 500
 _EXCERPT_CHARS = 1200          # full-page context fed to the model per source
 _MAX_CHUNKS_PER_PAGE = 8
+# Non-HTML documents BeautifulSoup can't meaningfully parse — skip the full-page fetch for these
+# and fall back to the Tavily snippet in the catalog.
+_NON_HTML_EXT = (
+    ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx",
+    ".zip", ".jpg", ".jpeg", ".png", ".gif", ".mp4", ".mp3",
+)
 
 # Curated high-authority domains (extend freely; heuristic only).
 _HIGH_AUTHORITY = {
@@ -149,6 +155,9 @@ def _chunk_text(url: str, text: str) -> list[PageChunk]:
 
 
 async def _fetch_and_chunk(url: str) -> tuple[list[PageChunk], datetime | None]:
+    if urlparse(url).path.lower().endswith(_NON_HTML_EXT):
+        logger.info("research: skipping non-HTML source %s", url)
+        return [], None
     html = await llm.fetch_page_html(url)
     return _chunk_text(url, _extract_main_text(html)), _parse_published_time(html)
 
