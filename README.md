@@ -172,7 +172,3 @@ docs/screenshots/01-graph.png      # the pipeline graph + inputs
 docs/screenshots/02-approval.png   # the quality report + approval gate
 docs/screenshots/03-published.png  # the published article + downloads
 ```
-
-## License
-
-MIT — portfolio project.

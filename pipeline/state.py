@@ -86,3 +86,126 @@ def initial_state(topic: str, target_keyword: str) -> PipelineState:
         slug="",
         output_files=None,
     )
+
+
+# =====================================================================================
+# V2 additions — new payload models + the extended V2 state
+# =====================================================================================
+class PageChunk(BaseModel):
+    """A ~500-token chunk of full page text fetched for RAG (V2 research upgrade)."""
+
+    url: str
+    chunk_text: str
+    chunk_index: int
+    relevance_score: float = 0.0
+
+
+class RevisionRound(BaseModel):
+    """A scored record of one editor revision (V2 loop visibility)."""
+
+    round_number: int
+    fact_check_score: float
+    seo_score: float
+    diff_summary: str = ""
+    sections_changed: list[str] = Field(default_factory=list)
+    # 1 - difflib SequenceMatcher.ratio(): 0.0 = identical, higher = more changed.
+    edit_distance: float = 0.0
+
+
+class ClaimTrace(BaseModel):
+    """Per-claim before/after trace across revision rounds (V2 fact-check upgrade)."""
+
+    claim: str
+    status: str  # "verified" | "fixed" | "removed" | "flagged"
+    original_text: str = ""
+    revised_text: str | None = None
+    source_url: str | None = None
+    round_number: int = 0
+
+
+class BatchResult(BaseModel):
+    """Status + result of one topic in a multi-topic batch run (V2)."""
+
+    topic: str
+    status: str = "running"  # "running" | "complete" | "failed"
+    final_score: float | None = None
+    output_path: str | None = None
+
+
+class MemoryHit(BaseModel):
+    """A past run retrieved from the ChromaDB memory layer (V2)."""
+
+    slug: str
+    topic: str
+    similarity: float
+    sources: list[Source] = Field(default_factory=list)
+    fact_sheet: str = ""
+    run_date: str = ""
+
+
+class OutlineSection(BaseModel):
+    """One H2 section in the structured outline (V2 outline_agent)."""
+
+    title: str
+    facts_to_cover: list[str] = Field(default_factory=list)
+    source_urls: list[str] = Field(default_factory=list)
+    estimated_words: int = 0
+    subsections: list[str] = Field(default_factory=list)
+
+
+class V2PipelineState(PipelineState, total=False):
+    """V1 state extended with V2 fields (voice, memory, RAG, loop visibility, batch).
+
+    Inherits every V1 field so the upgraded agents stay backward-compatible; V1's graph
+    keeps using :class:`PipelineState` unchanged.
+    """
+
+    # Voice I/O
+    voice_input_path: str | None
+    audio_summary_path: str | None
+    # Memory
+    memory_hit: bool
+    reused_sources: list[Source]
+    # Research upgrades
+    full_page_chunks: list[PageChunk]
+    credibility_scores: dict[str, float]
+    # Writing upgrades
+    style_persona: str
+    self_critique: str
+    # Loop visibility
+    revision_history: list[RevisionRound]
+    flagged_claims_trace: list[ClaimTrace]
+    # Multi-topic batch
+    batch_topics: list[str]
+    batch_results: list[BatchResult]
+    # HITL reject feedback
+    human_feedback: str | None
+
+
+def initial_v2_state(
+    topic: str,
+    target_keyword: str,
+    *,
+    style_persona: str = "technical deep-dive",
+    voice_input_path: str | None = None,
+    batch_topics: list[str] | None = None,
+) -> V2PipelineState:
+    """Return a fully-initialised :class:`V2PipelineState` (reuses V1's defaults)."""
+
+    state: dict[str, Any] = dict(initial_state(topic, target_keyword))
+    state.update(
+        voice_input_path=voice_input_path,
+        audio_summary_path=None,
+        memory_hit=False,
+        reused_sources=[],
+        full_page_chunks=[],
+        credibility_scores={},
+        style_persona=style_persona,
+        self_critique="",
+        revision_history=[],
+        flagged_claims_trace=[],
+        batch_topics=batch_topics or [],
+        batch_results=[],
+        human_feedback=None,
+    )
+    return state  # type: ignore[return-value]

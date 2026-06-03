@@ -12,6 +12,9 @@ registered falls back to a generic, type-aware filler so a call never crashes in
 
 from __future__ import annotations
 
+import hashlib
+import math
+import random
 import types
 import typing
 from typing import Any, Callable, Type, TypeVar, get_args, get_origin
@@ -178,3 +181,94 @@ def get_search_client() -> Any:
     from tavily import TavilyClient
 
     return TavilyClient(api_key=config.require_key("TAVILY_API_KEY"))
+
+
+# ---------------------------------------------------------------------------
+# V2: OpenAI client (embeddings + audio), deterministic in mock mode
+# ---------------------------------------------------------------------------
+def _deterministic_vector(text: str, dim: int = 64) -> list[float]:
+    """A stable unit vector derived from ``text`` (mock embeddings).
+
+    Identical text -> identical vector (cosine 1.0); different text -> ~orthogonal, so
+    similarity thresholds behave predictably in tests without calling the embeddings API.
+    """
+
+    seed = int.from_bytes(hashlib.sha256(text.encode("utf-8")).digest()[:8], "big")
+    rng = random.Random(seed)
+    vec = [rng.gauss(0.0, 1.0) for _ in range(dim)]
+    norm = math.sqrt(sum(x * x for x in vec)) or 1.0
+    return [x / norm for x in vec]
+
+
+class _MockEmbeddingItem:
+    def __init__(self, embedding: list[float]) -> None:
+        self.embedding = embedding
+
+
+class _MockEmbeddingResponse:
+    def __init__(self, data: list["_MockEmbeddingItem"]) -> None:
+        self.data = data
+
+
+class _MockEmbeddings:
+    def create(self, model: str, input: Any, **_: Any) -> "_MockEmbeddingResponse":
+        texts = input if isinstance(input, list) else [input]
+        return _MockEmbeddingResponse([_MockEmbeddingItem(_deterministic_vector(t)) for t in texts])
+
+
+class MockOpenAIClient:
+    """Offline stand-in for the raw ``openai.OpenAI`` client (embeddings now; audio in M7)."""
+
+    def __init__(self) -> None:
+        self.embeddings = _MockEmbeddings()
+
+
+def get_openai_client() -> Any:
+    """Return a raw OpenAI client (live) or :class:`MockOpenAIClient` (mock mode).
+
+    Used for embeddings and audio (Whisper/TTS); the chat path still uses :func:`get_llm`.
+    """
+
+    if config.MOCK_MODE:
+        return MockOpenAIClient()
+
+    from openai import OpenAI
+
+    return OpenAI(api_key=config.require_key("OPENAI_API_KEY"))
+
+
+def embed_texts(texts: list[str]) -> list[list[float]]:
+    """Embed a list of texts with the configured model (deterministic in mock mode)."""
+
+    if not texts:
+        return []
+    response = get_openai_client().embeddings.create(model=config.EMBED_MODEL, input=texts)
+    return [item.embedding for item in response.data]
+
+
+# ---------------------------------------------------------------------------
+# V2: full-page fetch for deep-research RAG (async)
+# ---------------------------------------------------------------------------
+_FETCH_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; ContentPipelineBot/2.0; +https://example.com/bot)"
+}
+
+
+async def fetch_page_html(url: str, timeout: float = 10.0) -> str:
+    """Fetch a page's raw HTML (async). Mock mode returns deterministic canned HTML."""
+
+    if config.MOCK_MODE:
+        filler = "This is mock page content describing the topic in detail. " * 60
+        return (
+            f"<html><body><article><h1>Mock Page for {url}</h1>"
+            f"<p>{filler}</p></article></body></html>"
+        )
+
+    import httpx
+
+    async with httpx.AsyncClient(
+        timeout=timeout, follow_redirects=True, headers=_FETCH_HEADERS
+    ) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        return response.text

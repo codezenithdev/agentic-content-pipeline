@@ -47,13 +47,27 @@ MODEL_MINI: str = os.environ.get("MODEL_MINI", "gpt-4.1-mini")
 TEMPERATURE: float = _env_float("LLM_TEMPERATURE", 0.3)
 LLM_MAX_RETRIES: int = _env_int("LLM_MAX_RETRIES", 3)
 
-#: Which model each agent role uses.
+# V2: role-specific model overrides (default to the configured family above).
+OUTLINE_MODEL: str = os.environ.get("OUTLINE_MODEL", MODEL_MINI)
+RESEARCH_MODEL: str = os.environ.get("RESEARCH_MODEL", MODEL_MINI)
+WRITER_MODEL: str = os.environ.get("WRITER_MODEL", MODEL_STRONG)
+EDITOR_MODEL: str = os.environ.get("EDITOR_MODEL", MODEL_STRONG)
+FACTCHECK_MODEL: str = os.environ.get("FACTCHECK_MODEL", MODEL_MINI)
+SEO_MODEL: str = os.environ.get("SEO_MODEL", MODEL_MINI)
+# V2: embeddings + audio (used via the raw OpenAI client, not langchain).
+EMBED_MODEL: str = os.environ.get("EMBED_MODEL", "text-embedding-3-small")
+WHISPER_MODEL: str = os.environ.get("WHISPER_MODEL", "whisper-1")
+TTS_MODEL: str = os.environ.get("TTS_MODEL", "tts-1")
+TTS_VOICE: str = os.environ.get("TTS_VOICE", "nova")
+
+#: Which model each agent role uses (V2 roles included; values resolve to the family above).
 MODEL_BY_ROLE: dict[str, str] = {
-    "research": MODEL_MINI,
-    "writer": MODEL_STRONG,
-    "fact_check": MODEL_MINI,
-    "seo": MODEL_MINI,
-    "editor": MODEL_STRONG,
+    "research": RESEARCH_MODEL,
+    "outline": OUTLINE_MODEL,
+    "writer": WRITER_MODEL,
+    "fact_check": FACTCHECK_MODEL,
+    "seo": SEO_MODEL,
+    "editor": EDITOR_MODEL,
 }
 
 
@@ -83,6 +97,30 @@ TAVILY_SEARCH_DEPTH: str = os.environ.get("TAVILY_SEARCH_DEPTH", "advanced")
 # Output
 # ---------------------------------------------------------------------------
 OUTPUT_DIR: str = os.environ.get("OUTPUT_DIR", "output")
+
+# ---------------------------------------------------------------------------
+# V2: memory, loop visibility, batch, research RAG, server
+# ---------------------------------------------------------------------------
+CHROMA_PERSIST_DIR: str = os.environ.get("CHROMA_PERSIST_DIR", "./memory/chroma_store")
+MEMORY_COLLECTION: str = os.environ.get("MEMORY_COLLECTION", "pipeline_memory")
+MEMORY_SIMILARITY_THRESHOLD: float = _env_float("MEMORY_SIMILARITY_THRESHOLD", 0.82)
+
+#: Below this editor diff magnitude (1 - difflib ratio) the router escalates to HITL (stall gate).
+EDIT_DISTANCE_STALL: float = _env_float("EDIT_DISTANCE_STALL", 0.03)
+
+#: Cap on parallel subgraphs in a multi-topic batch (cost control).
+MAX_PARALLEL_SUBGRAPHS: int = _env_int("MAX_PARALLEL_SUBGRAPHS", 3)
+
+# Research RAG (full-page fetch + chunking + credibility).
+PAGE_FETCH_TOP_N: int = _env_int("PAGE_FETCH_TOP_N", 3)
+CHUNK_SIZE_TOKENS: int = _env_int("CHUNK_SIZE_TOKENS", 500)
+CREDIBILITY_MIN: float = _env_float("CREDIBILITY_MIN", 0.4)
+
+#: Writing styles the writer/editor understand.
+STYLE_PERSONAS: tuple[str, ...] = ("technical deep-dive", "beginner-friendly", "op-ed")
+
+# FastAPI server
+V2_PORT: int = _env_int("V2_PORT", 8000)
 
 
 class MissingKeyError(RuntimeError):

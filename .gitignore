@@ -18,3 +18,12 @@ __pycache__/
 Thumbs.db
 .idea/
 .vscode/
+
+# V2: persistent vector memory store
+memory/chroma_store/
+
+# V2: Next.js frontend
+v2/frontend/node_modules/
+v2/frontend/.next/
+v2/frontend/out/
+v2/frontend/.env.local
