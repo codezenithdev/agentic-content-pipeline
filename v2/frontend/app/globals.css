@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  background: #0d0d0f;
+  color: #f0ede6;
+}
+
+/* Agent node + edge animations driven by SSE state */
+.node-running {
+  animation: nodepulse 1.2s ease-in-out infinite;
+}
+@keyframes nodepulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(45, 212, 191, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(45, 212, 191, 0);
+  }
+}
+.node-hitl {
+  animation: hitlpulse 1.2s ease-in-out infinite;
+}
+@keyframes hitlpulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(245, 158, 11, 0);
+  }
+}
+.react-flow__edge.edge-active .react-flow__edge-path {
+  stroke: #2dd4bf;
+  stroke-dasharray: 6;
+  animation: dashflow 0.6s linear infinite;
+}
+@keyframes dashflow {
+  to {
+    stroke-dashoffset: -12;
+  }
+}
+
+/* Code-review style diff */
+.diff-add {
+  background: rgba(52, 211, 153, 0.12);
+  color: #9ff0cf;
+}
+.diff-del {
+  background: rgba(248, 113, 113, 0.12);
+  color: #f8b4b4;
+  text-decoration: line-through;
+}
+
+/* Markdown article rendering */
+.prose-editorial h1 {
+  font-size: 1.6rem;
+  font-weight: 600;
+  margin: 1rem 0 0.5rem;
+}
+.prose-editorial h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 1.25rem 0 0.5rem;
+  color: #2dd4bf;
+}
+.prose-editorial h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 1rem 0 0.4rem;
+}
+.prose-editorial p {
+  margin: 0.6rem 0;
+  line-height: 1.7;
+}
+.prose-editorial ul {
+  list-style: disc;
+  margin: 0.6rem 0 0.6rem 1.4rem;
+}
+.prose-editorial a {
+  color: #2dd4bf;
+  text-decoration: underline;
+}

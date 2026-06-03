@@ -35,11 +35,15 @@ EDITOR = "editor_agent"
 PUBLISHER = "publisher_agent"
 
 
-def build_graph_v2(checkpointer=None):
+def build_graph_v2(checkpointer=None, *, interrupt: bool = True):
     """Build and compile the 8-node async V2 graph.
 
     Invoke with ``ainvoke``/``astream`` and ``config={"configurable": {"thread_id": ...}}``; it
     runs to the interrupt before ``publisher_agent``, then resume with ``ainvoke(None, config)``.
+
+    Args:
+        interrupt: when True (default) pause before ``publisher_agent`` for the HITL gate; set
+            False for batch runs that should auto-publish without a human in the loop.
     """
 
     builder = StateGraph(V2PipelineState)
@@ -62,7 +66,7 @@ def build_graph_v2(checkpointer=None):
     builder.add_edge(EDITOR, FACT_CHECK)  # re-validate every revision
     builder.add_edge(PUBLISHER, END)
 
-    return builder.compile(
-        checkpointer=checkpointer or _default_checkpointer(),
-        interrupt_before=[PUBLISHER],
-    )
+    compile_kwargs = {"checkpointer": checkpointer or _default_checkpointer()}
+    if interrupt:
+        compile_kwargs["interrupt_before"] = [PUBLISHER]
+    return builder.compile(**compile_kwargs)

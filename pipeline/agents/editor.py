@@ -66,6 +66,8 @@ async def editor_agent(state: V2PipelineState) -> dict:
     fix_now = (state.get("seo_feedback") or {}).get("fix_now", [])
     flagged_block = "\n".join(f"- {t.claim}  (source: {t.source_url or 'none'})" for t in flagged) or "(none)"
     fix_block = "\n".join(f"- {item}" for item in fix_now) or "(none)"
+    human_feedback = (state.get("human_feedback") or "").strip()
+    feedback_block = f"\n\nHUMAN REVIEWER FEEDBACK (address this directly):\n{human_feedback}" if human_feedback else ""
 
     model = llm.get_llm("editor").with_retry(stop_after_attempt=config.LLM_MAX_RETRIES)
     response = await model.ainvoke(
@@ -76,7 +78,7 @@ async def editor_agent(state: V2PipelineState) -> dict:
                 f"Leave every other section untouched. Keep the persona ({persona}), the markdown "
                 "structure, and the length. Return the FULL revised article.")),
             HumanMessage(content=(
-                f"FLAGGED CLAIMS:\n{flagged_block}\n\nSEO FIX_NOW:\n{fix_block}\n\n"
+                f"FLAGGED CLAIMS:\n{flagged_block}\n\nSEO FIX_NOW:\n{fix_block}{feedback_block}\n\n"
                 f"FACT SHEET:\n{state.get('fact_sheet', '')}\n\nARTICLE:\n{draft}")),
         ]
     )
