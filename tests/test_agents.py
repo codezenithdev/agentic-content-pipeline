@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -22,7 +23,7 @@ def drafted_state() -> dict:
     """A state advanced through research -> writer -> fact_check -> seo (mock mode)."""
 
     st = initial_state("AI agents", "langgraph")
-    st.update(research_agent(st))
+    st.update(asyncio.run(research_agent(st)))
     st.update(writer_agent(st))
     st.update(fact_check_agent(st))
     st.update(seo_agent(st))
@@ -30,14 +31,17 @@ def drafted_state() -> dict:
 
 
 def test_research_builds_sources_and_fact_sheet():
-    out = research_agent(initial_state("AI agents", "langgraph"))
+    out = asyncio.run(research_agent(initial_state("AI agents", "langgraph")))
     assert out["sources"] and all(isinstance(s, Source) for s in out["sources"])
     assert "Fact Sheet" in out["fact_sheet"]
+    # V2: deep-research artifacts present
+    assert out["full_page_chunks"] and out["credibility_scores"]
+    assert any(tag in out["fact_sheet"] for tag in ("[HIGH]", "[MEDIUM]", "[LOW]"))
 
 
 def test_writer_builds_outline_and_draft():
     st = initial_state("AI agents", "langgraph")
-    st.update(research_agent(st))
+    st.update(asyncio.run(research_agent(st)))
     out = writer_agent(st)
     assert out["outline"].lstrip().startswith("#")
     assert out["draft"].lstrip().startswith("#")

@@ -106,6 +106,9 @@ class _MockStructuredRunnable:
     def invoke(self, *args: Any, **kwargs: Any) -> BaseModel:
         return build_mock_instance(self._schema, self._role)
 
+    async def ainvoke(self, *args: Any, **kwargs: Any) -> BaseModel:
+        return self.invoke(*args, **kwargs)
+
 
 class MockChatModel:
     """Deterministic, offline stand-in for ``ChatOpenAI``."""
@@ -126,6 +129,9 @@ class MockChatModel:
         from langchain_core.messages import AIMessage
 
         return AIMessage(content=MOCK_TEXT.get(self.role, f"[mock {self.role} output]"))
+
+    async def ainvoke(self, *args: Any, **kwargs: Any) -> Any:
+        return self.invoke(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------

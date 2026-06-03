@@ -24,8 +24,10 @@ approval before publishing (HITL).
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import logging
-from typing import Literal
+from typing import Awaitable, Callable, Literal
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
@@ -38,7 +40,38 @@ from pipeline.agents.publisher import publisher_agent
 from pipeline.agents.research import research_agent
 from pipeline.agents.seo import seo_agent
 from pipeline.agents.writer import writer_agent
-from pipeline.state import FlaggedClaim, PipelineState, Source
+from pipeline.state import (
+    BatchResult,
+    ClaimTrace,
+    FlaggedClaim,
+    MemoryHit,
+    OutlineSection,
+    PageChunk,
+    PipelineState,
+    RevisionRound,
+    Source,
+    V2PipelineState,
+)
+
+
+def _sync(async_node: Callable[[dict], Awaitable[dict]]) -> Callable[[dict], dict]:
+    """Adapt an async agent node so V1's synchronous graph can drive it unchanged.
+
+    The V2 agents are ``async def`` (so the V2 graph can ``astream``). V1's ``build_graph`` is
+    invoked synchronously (Streamlit, CLI, tests), so each async node is run to completion here:
+    directly via ``asyncio.run`` when no loop is active, otherwise on a worker thread.
+    """
+
+    def wrapper(state: dict) -> dict:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(async_node(state))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(lambda: asyncio.run(async_node(state))).result()
+
+    wrapper.__name__ = getattr(async_node, "__name__", "node")
+    return wrapper
 
 logger = logging.getLogger("pipeline.router")
 
@@ -97,7 +130,12 @@ def _default_checkpointer() -> MemorySaver:
     threatens to block it in a future version. Registering the types keeps the demo output clean.
     """
 
-    serde = JsonPlusSerializer(allowed_msgpack_modules=[Source, FlaggedClaim])
+    serde = JsonPlusSerializer(
+        allowed_msgpack_modules=[
+            Source, FlaggedClaim, PageChunk, RevisionRound, ClaimTrace,
+            BatchResult, MemoryHit, OutlineSection,
+        ]
+    )
     return MemorySaver(serde=serde)
 
 
@@ -114,8 +152,8 @@ def build_graph(checkpointer=None):
         runs to the interrupt before ``publisher_agent``, then resume with ``invoke(None, config)``.
     """
 
-    builder = StateGraph(PipelineState)
-    builder.add_node(RESEARCH, research_agent)
+    builder = StateGraph(V2PipelineState)  # superset schema; V1 nodes write a subset of channels
+    builder.add_node(RESEARCH, _sync(research_agent))  # research is async (V2); adapt for V1's sync graph
     builder.add_node(WRITER, writer_agent)
     builder.add_node(FACT_CHECK, fact_check_agent)
     builder.add_node(SEO, seo_agent)
